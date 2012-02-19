@@ -1,4 +1,4 @@
-{-# LANGUAGE NoMonomorphismRestriction, DeriveDataTypeable #-}
+{-# LANGUAGE NoMonomorphismRestriction, DeriveDataTypeable, TemplateHaskell #-}
 module Types where
 import Control.Monad.RWS
 import Control.Monad.Error
@@ -9,6 +9,9 @@ import Text.Parsec hiding (State)
 import Text.Parsec.Token
 import Data.Data
 import Text.Parsec.Language
+import Data.Lens.Strict
+import Data.Lens.Template
+import Control.Arrow (second)
 
 
 
@@ -21,11 +24,16 @@ type Value    = Double
 type Time     = Double  -- MSecSinceEpoch
 type TimeRange = (Time, Time) 
 
-data Origin = Origin Device Location
+data Origin = Origin {
+    _device :: Device,
+    _location ::  Location
+    }
     deriving(Eq, Show, Read, Data, Typeable)
+
 
 data Query = TimeRangeQuery UserId TimeRange
     deriving(Eq, Show, Read, Data, Typeable)
+
  
 data Request = GetRequest Query
              | PutRequest [OriginTimeSeries]
@@ -33,8 +41,8 @@ data Request = GetRequest Query
 
 data IncomingPayload = IncomingPayload 
     {
-        requesting_user :: UserId,
-        request         ::  Request
+        _requesting_user :: UserId,
+        _request         ::  Request
     }
     deriving(Eq, Show, Read, Data, Typeable)
     
@@ -42,7 +50,11 @@ type OriginTimeSeries = (Origin, TypedTimeSeries)
 
 type TimeSeries = [(Time, Value)]
 
-data TypedTimeSeries = TypedTimeSeries SignalType TimeSeries
+data TypedTimeSeries = TypedTimeSeries 
+    {
+        _signal_type :: SignalType,
+        _timeseries  :: TimeSeries
+    }
     deriving(Eq, Show, Read, Data, Typeable)
 
 type TypedTimeSeriesCollection = [TypedTimeSeries]
@@ -70,8 +82,11 @@ data Response = GetResponse [OriginTimeSeries]
 data OutgoingPayload = OutgoingPayload UserId Response 
     deriving(Eq, Show, Read, Data, Typeable)
 
+$(makeLenses [''Origin, ''TypedTimeSeries])
+
 eval :: IncomingPayload -> EvalState OutgoingPayload
-eval (IncomingPayload userId request) = eval' userId request
+eval (IncomingPayload userId request) = do 
+    eval' userId request
 
 --un_maybe Nothing = throwError 
 --    un_maybe `fmap` 
@@ -85,7 +100,16 @@ eval' userId (PutRequest dat)   = do
       lift $ modify (H.insertWith (++) userId dat)
       return $ OutgoingPayload userId PutResponse
 
-get_timeseries_by_range time_range user_data = undefined
+in_range start end time = start <= time && time <= end
+
+--fromOriginTimeSeries (OriginTimeSeries x y) = (x, y)
+--fromTypedTimeSeries  (TypedSeries) = 
+
+filter_in_range start end origin_timeseries = result where
+     filter_to_time_series x = (timeseries ^%= filter (in_range start end . fst)) x
+     result = (second filter_to_time_series) origin_timeseries
+
+get_timeseries_by_range (start, end) timeseries = map (filter_in_range start end) timeseries
 
 ------------------------------------------------------------------------------------------------
 
@@ -122,7 +146,7 @@ loop app_state_ref = do
 
     (output, new_state, ()) <- run_evaluator state parse_output
 
-    --print output
+    print output
     print new_state
 
     writeIORef app_state_ref new_state
